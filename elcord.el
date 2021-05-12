@@ -48,6 +48,11 @@ See <https://discordapp.com/developers/applications/me>."
   :type 'integer
   :group 'elcord)
 
+(defcustom elcord-quiet 'nil
+  "Whether or not to supress elcord messages (connecting, disconnecting, etc.)"
+  :type 'boolean
+  :group 'elcord)
+
 (defcustom elcord-mode-icon-alist '((c-mode . "c-mode_icon")
                                     (c++-mode . "cpp-mode_icon")
                                     (clojure-mode . "clojure-mode_icon")
@@ -59,7 +64,9 @@ See <https://discordapp.com/developers/applications/me>."
                                     (erc-mode . "irc-mode_icon")
                                     (forth-mode . "forth-mode_icon")
                                     (fsharp-mode . "fsharp-mode_icon")
+                                    (gdscript-mode . "gdscript-mode_icon")
                                     (haskell-mode . "haskell-mode_icon")
+                                    (haskell-interactive-mode . "haskell-mode_icon")
                                     (java-mode . "java-mode_icon")
                                     (js-mode . "javascript-mode_icon")
                                     (kotlin-mode . "kotlin-mode_icon")
@@ -74,6 +81,7 @@ See <https://discordapp.com/developers/applications/me>."
                                     (ruby-mode . "ruby-mode_icon")
                                     (rust-mode . "rust-mode_icon")
                                     (rustic-mode . "rust-mode_icon")
+                                    (zig-mode . "zig-mode_icon")
                                     ("^slime-.*" . "lisp-mode_icon")
                                     ("^sly-.*$" . "lisp-mode_icon")
                                     (php-mode . "php-mode_icon")
@@ -92,6 +100,7 @@ Note, these icon names must be available as 'small_image' in Discord."
                                     (cperl-mode . "Perl")
                                     (enh-ruby-mode . "Ruby")
                                     (fsharp-mode . "F#")
+                                    (gdscript-mode . "GDScript")
                                     (java-mode . "Java")
                                     (lisp-mode . "Common-Lisp")
                                     (markdown-mode . "Markdown")
@@ -126,6 +135,12 @@ Otherwise, it will display:
 
 The mode text is the same found by `elcord-mode-text-alist'"
   :type 'boolean
+  :group 'elcord)
+
+(defcustom elcord-buffer-details-format-function 'elcord-buffer-details-format
+  "Function to return the buffer details string shown on discord.
+Swap this with your own function if you want a custom buffer-details message."
+  :type 'function
   :group 'elcord)
 
 (defcustom elcord-use-major-mode-as-main-icon 'nil
@@ -285,12 +300,10 @@ Unused on other platforms.")
 
 (defun elcord--empty-presence ()
   "Sends an empty presence for when elcord is disabled."
-  (let* ((activity
-          `(("details" . "Emacs"))) ;; For the time being we have to send a presence after we connect, we can't empty it :/
-         (nonce (format-time-string "%s%N"))
+  (let* ((nonce (format-time-string "%s%N"))
          (presence
           `(("cmd" . "SET_ACTIVITY")
-            ("args" . (("activity" . ,activity)
+            ("args" . (("activity" . nil)
                        ("pid" . ,(emacs-pid))))
             ("nonce" . ,nonce))))
     (elcord--send-packet 1 presence)))
@@ -324,7 +337,8 @@ Argument EVNT The available output from the process."
   "Connects to the Discord socket."
   (or elcord--sock
       (ignore-errors
-        (message "elcord: attempting reconnect..")
+        (unless elcord-quiet
+          (message "elcord: attempting reconnect.."))
         (setq elcord--sock (elcord--make-process))
         (condition-case nil
             (elcord--send-packet 0 `(("v" . 1) ("client_id" . ,(elcord--resolve-client-id))))
@@ -344,7 +358,7 @@ Argument EVNT The available output from the process."
   (when (elcord--connect)
     ;;Reconnected.
     ;; Put a pending message unless we already got first handshake
-    (unless elcord--update-presence-timer
+    (unless (or elcord--update-presence-timer elcord-quiet)
       (message "elcord: connecting..."))
     (elcord--cancel-reconnect)))
 
@@ -361,7 +375,8 @@ Argument EVNT The available output from the process."
 
 (defun elcord--handle-disconnect ()
   "Handles reconnecting when socket disconnects."
-  (message "elcord: disconnected")
+  (unless elcord-quiet
+    (message "elcord: disconnected"))
   ;;Stop updating presence for now
   (elcord--cancel-updates)
   (setq elcord--sock nil)
@@ -445,7 +460,7 @@ If no text is available, use the value of `mode-name'."
                 mode nil)
         (setq mode (get mode 'derived-mode-parent))))
     (unless (stringp ret)
-      (setq ret (format "%s" ret)))
+      (setq ret (format-mode-line ret)))
     ret))
 
 (defun elcord--mode-icon-and-text ()
@@ -482,11 +497,15 @@ If no text is available, use the value of `mode-name'."
        (cons "large_image" large-image)
        (cons "small_text" small-text))))))
 
+(defun elcord-buffer-details-format ()
+  "Return the buffer details string shown on discord."
+  (format "Editing %s" (buffer-name)))
+
 (defun elcord--details-and-state ()
   "Obtain the details and state to use for Discord's Rich Presence."
   (let ((activity (if elcord-display-buffer-details
                       (list
-                       (cons "details" (format "Editing %s" (buffer-name)))
+                       (cons "details" (funcall elcord-buffer-details-format-function))
                        (cons "state" (format "Line %s (%s of %S)"
                                              (format-mode-line "%l")
                                              (format-mode-line "%l")
@@ -566,7 +585,8 @@ If there is no 'previous' buffer attempt to find a non-boring buffer to initiali
 (defun elcord--start-updates ()
   "Start sending periodic update to Discord Rich Presence."
   (unless elcord--update-presence-timer
-    (message "elcord: connected. starting updates")
+    (unless elcord-quiet
+      (message "elcord: connected. starting updates"))
     ;;Start sending updates now that we've heard from discord
     (setq elcord--last-known-position -1
           elcord--last-known-buffer-name ""
